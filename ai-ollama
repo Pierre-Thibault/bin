@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# AI helper script for Helix integration
+# Usage: ai "your question"
+# Or with stdin: echo "code" | ai "explain this"
+
+# Strip ANSI color codes and control characters from output
+strip_ansi() {
+  sed 's/\x1b\[[0-9;]*[mGKHJ]//g' | sed 's/\x1b\[?[0-9]*[hl]//g' | sed 's/\r//g'
+}
+
+if [ -t 0 ]; then
+  # No stdin, just run with question
+  ollama run qwen2.5-coder:7b "$@" 2>/dev/null | strip_ansi
+else
+  # Has stdin, prepend it to the question
+  input=$(cat)
+  ollama run qwen2.5-coder:7b "$@
+
+$input" 2>/dev/null | strip_ansi
+fi

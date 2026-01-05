@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+
+# Inspired by: https://linuxconfig.org/how-to-create-compressed-encrypted-archives-with-tar-and-gpg
+
+# This script backup the folders in the source (see the variables down there) to the destination directory.
+# All folders in source are backup as its own encrypted compressed tar archive except if the folder
+# contains a file named .nobackup. Non dot files at source level are not backup.
+#
+# The dot files and folders are backup in their own separated archive named dot_files.tar.gz.pgp.
+#
+# This script ask for the encryption passphrase at the start. The passphrase is needed for restoration.
+#
+# Change source and destination below as needed.
+#
+# Dependencies: tar, gpg
+# 
+# Pierre Thibault 2024-11-06
+# License: MIT https://opensource.org/license/MIT
+
+set -e  # Stop immediately when an error occurs
+
+source="$HOME"  # The folder to backup
+destination="/run/media/pierre/SauvegardeLinux/2025-05-18"  # Where to put the archive
+
+# Ask passphrase
+read -p "Passphrase? " -s passphrase
+echo
+read -p "Passphrase again (confirmation)? " -s passphrase_confirmation
+echo
+
+# Validate passphrase
+if [ "$passphrase" != "$passphrase_confirmation" ]; then
+  echo "Passphrases dot not match"
+  exit 1
+fi
+
+# Do the backup of non dot folders
+mkdir -p "$destination"  # Ensure destination exist
+for dir_name in $(ls $source --format=single-column)
+do
+  if [ -d "$source/$dir_name" ] && [ ! -f "$source/$dir_name/.nobackup" ]; then  # Do not backup if .nobackup file is present
+    echo "$dir_name"
+    tar --create --verbose --gzip --file - "$source/$dir_name" | gpg --batch -c --passphrase "$passphrase" > "$destination/$dir_name.tar.gz.pgp"
+  fi
+done
+
+# Do the backup of the dot files and directories in its own archive
+ls -1A "$source" | grep -E '^\..*' | xargs -I {} tar --create --verbose --gzip --exclude="Trash" --file - "$source/"{} | gpg --batch -c --passphrase "$passphrase" > "$destination/dot_files.tar.gz.pgp"
+
+# How to decompress: gpg -d folder.tar.gz.gpg | tar -xvzf -
+

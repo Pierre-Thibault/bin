@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# AI helper using Groq API (much faster than local Ollama)
+# Usage: ai-groq "your question"
+# Or with stdin: echo "code" | ai-groq "explain this"
+
+# Read API key from file
+GROQ_KEY_FILE="$HOME/secrets/groq"
+
+if [ ! -f "$GROQ_KEY_FILE" ]; then
+  echo "Error: API key file not found at $GROQ_KEY_FILE" >&2
+  echo "Create the file and add your Groq API key from: https://console.groq.com/keys" >&2
+  exit 1
+fi
+
+GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
+
+if [ -z "$GROQ_API_KEY" ]; then
+  echo "Error: API key file is empty" >&2
+  exit 1
+fi
+
+# Read stdin if available
+if [ -t 0 ]; then
+  user_content="$*"
+else
+  stdin_content=$(cat)
+  user_content="$*
+
+Code:
+\`\`\`
+$stdin_content
+\`\`\`"
+fi
+
+# Call Groq API using curl
+# Using llama-3.3-70b-versatile (fast and good for code)
+response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
+  -d "{
+    \"model\": \"llama-3.3-70b-versatile\",
+    \"messages\": [{\"role\": \"user\", \"content\": $(echo "$user_content" | jq -Rs .)}],
+    \"temperature\": 0.3,
+    \"max_tokens\": 2048
+  }")
+
+# Extract the response content using jq
+echo "$response" | jq -r '.choices[0].message.content // "Error: No response from API"'

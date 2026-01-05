@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Generic code wrapper using AI
+# Usage in Helix: select code, then | wrap if
+#                                    | wrap for
+#                                    | wrap try-catch
+#                                    | wrap function
+
+# Read API key
+GROQ_KEY_FILE="$HOME/secrets/groq"
+
+if [ ! -f "$GROQ_KEY_FILE" ]; then
+  echo "Error: API key file not found at $GROQ_KEY_FILE" >&2
+  exit 1
+fi
+
+GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
+
+# Get wrapper type from arguments
+wrapper_type="$*"
+if [ -z "$wrapper_type" ]; then
+  wrapper_type="if statement"
+fi
+
+# Read the code from stdin
+code=$(cat)
+
+# Create prompt - let AI detect the language
+prompt="Wrap this code in a $wrapper_type. Detect the programming language automatically. Preserve the exact indentation and code style. Output ONLY the wrapped code with no explanations, no markdown fences.
+
+Code to wrap:
+$code"
+
+# Call Groq API
+response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
+  -d "{
+    \"model\": \"llama-3.3-70b-versatile\",
+    \"messages\": [{
+      \"role\": \"system\",
+      \"content\": \"You are a code formatting assistant. Output only code, never explanations or markdown. Preserve indentation exactly.\"
+    }, {
+      \"role\": \"user\",
+      \"content\": $(echo "$prompt" | jq -Rs .)
+    }],
+    \"temperature\": 0.1,
+    \"max_tokens\": 2048
+  }")
+
+# Extract response
+result=$(echo "$response" | jq -r '.choices[0].message.content // "Error: No response"')
+
+# Remove any markdown code fences that might slip through
+echo "$result" | sed -e '/^```/d' -e 's/^```.*$//'
