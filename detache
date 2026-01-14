@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+# This script runs a command in a detach process so you can start a command from
+# the terminal, quit the terminal while having the command still running.
+
+setsid "$@" 1>/dev/null 2>/dev/null

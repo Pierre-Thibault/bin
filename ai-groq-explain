@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Explains code and preserves it
+# Usage in Helix: | ai-groq-explain "your question"
+
+# Read API key from file
+GROQ_KEY_FILE="$HOME/secrets/groq"
+
+if [ ! -f "$GROQ_KEY_FILE" ]; then
+  echo "Error: API key file not found at $GROQ_KEY_FILE" >&2
+  exit 1
+fi
+
+GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
+
+# Read stdin (the selected code)
+stdin_content=$(cat)
+
+user_content="$*
+
+Code:
+\`\`\`
+$stdin_content
+\`\`\`"
+
+# Call Groq API
+response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
+  -d "{
+    \"model\": \"llama-3.3-70b-versatile\",
+    \"messages\": [{\"role\": \"user\", \"content\": $(echo "$user_content" | jq -Rs .)}],
+    \"temperature\": 0.3,
+    \"max_tokens\": 2048
+  }")
+
+explanation=$(echo "$response" | jq -r '.choices[0].message.content // "Error: No response"')
+
+# Output: original code + explanation
+echo "$stdin_content"
+echo ""
+echo "# AI Explanation:"
+echo "# $explanation" | fold -w 80 -s | sed 's/^/# /'

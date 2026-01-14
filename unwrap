@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Generic code unwrapper using AI
+# Usage in Helix: select wrapped code, then | unwrap
+
+# Read API key
+GROQ_KEY_FILE="$HOME/secrets/groq"
+
+if [ ! -f "$GROQ_KEY_FILE" ]; then
+  echo "Error: API key file not found at $GROQ_KEY_FILE" >&2
+  exit 1
+fi
+
+GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
+
+# Read the code from stdin
+code=$(cat)
+
+# Create prompt
+prompt="Remove the outermost wrapper (if, for, while, function, try-catch, etc.) from this code. Keep only the inner content. Preserve the indentation of the inner code. Output ONLY the unwrapped code with no explanations, no markdown fences.
+
+Code to unwrap:
+$code"
+
+# Call Groq API
+response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
+  -d "{
+    \"model\": \"llama-3.3-70b-versatile\",
+    \"messages\": [{
+      \"role\": \"system\",
+      \"content\": \"You are a code formatting assistant. Output only code, never explanations or markdown. Remove outer wrappers and preserve inner code indentation.\"
+    }, {
+      \"role\": \"user\",
+      \"content\": $(echo "$prompt" | jq -Rs .)
+    }],
+    \"temperature\": 0.1,
+    \"max_tokens\": 2048
+  }")
+
+# Extract response
+result=$(echo "$response" | jq -r '.choices[0].message.content // "Error: No response"')
+
+# Remove any markdown code fences that might slip through
+cleaned=$(echo "$result" | sed -e '/^```/d' -e 's/^```.*$//')
+
+# Remove common leading indentation
+# Find minimum indentation (ignoring empty lines)
+min_indent=$(echo "$cleaned" | sed '/^\s*$/d' | sed 's/\t/  /g' | \
+  awk '{match($0, /^[[:space:]]*/); print RLENGTH}' | sort -n | head -1)
+
+# Remove that amount of indentation from all lines
+if [ -n "$min_indent" ] && [ "$min_indent" -gt 0 ]; then
+  echo "$cleaned" | sed "s/^.\{$min_indent\}//"
+else
+  echo "$cleaned"
+fi
