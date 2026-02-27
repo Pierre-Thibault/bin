@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Launch Claude Code with Groq models via LiteLLM proxy
+# Usage: use_groq_with_claude [claude arguments...]
+# Example: use_groq_with_claude --model groq-llama-3.1-70b-versatile
+
+# Check for claude.ai authentication conflict
+# Claude Code doesn't allow both claude.ai token and ANTHROPIC_API_KEY simultaneously
+CLAUDE_CONFIG="$HOME/.config/claude/config.json"
+if [ -f "$CLAUDE_CONFIG" ] && grep -q '"loggedIn":true' "$CLAUDE_CONFIG" 2>/dev/null; then
+    echo "⚠ Warning: You are currently logged into claude.ai"
+    echo "  This will conflict with ANTHROPIC_API_KEY required for Groq."
+    echo ""
+    echo "  To use Groq models, please run:"
+    echo "    claude /logout"
+    echo ""
+    echo "  Then run this script again."
+    exit 1
+fi
+
+# Load Groq API key from secrets
+SECRETS_FILE="$HOME/secrets/groq"
+if [ -f "$SECRETS_FILE" ]; then
+    export GROQ_API_KEY="$(cat "$SECRETS_FILE")"
+elif [ -z "$GROQ_API_KEY" ]; then
+    echo "Error: GROQ_API_KEY not found"
+    echo "  Create ~/secrets/groq with your API key"
+    exit 1
+fi
+
+# Check if LiteLLM server is already running
+if ! curl -s http://localhost:4000/health > /dev/null 2>&1; then
+    echo "Starting LiteLLM server..."
+    litellm --config ~/litellm_config.yaml --port 4000 --host 0.0.0.0 > /dev/null 2>&1 &
+    sleep 2
+    echo "✓ LiteLLM server started"
+else
+    echo "✓ LiteLLM server already running"
+fi
+
+echo "✓ Launching Claude Code with Groq models via LiteLLM"
+echo ""
+echo "Model mappings:"
+echo "  claude-sonnet-4-5  -> llama-3.3-70b-versatile"
+echo "  claude-haiku-3-5   -> llama-3.3-70b-versatile"
+echo "  claude-opus-4-5    -> llama-3.3-70b-versatile"
+echo ""
+
+# Launch Claude Code with environment variables set
+# Pass all script arguments to claude command
+ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_API_KEY=sk-ant-api03-fake-key-for-litellm-proxy-placeholder claude "$@"

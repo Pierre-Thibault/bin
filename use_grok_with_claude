@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Launch Claude Code with Grok models via LiteLLM proxy
+# Usage: use_grok_with_claude [claude arguments...]
+
+# Check for claude.ai authentication conflict
+CLAUDE_CONFIG="$HOME/.config/claude/config.json"
+if [ -f "$CLAUDE_CONFIG" ] && grep -q '"loggedIn":true' "$CLAUDE_CONFIG" 2>/dev/null; then
+    echo "Warning: You are currently logged into claude.ai"
+    echo "  This will conflict with ANTHROPIC_API_KEY required for Grok."
+    echo ""
+    echo "  To use Grok models, please run:"
+    echo "    claude /logout"
+    echo ""
+    echo "  Then run this script again."
+    exit 1
+fi
+
+# Load xAI API key from secrets
+SECRETS_FILE="$HOME/secrets/grok"
+if [ -f "$SECRETS_FILE" ]; then
+    export XAI_API_KEY="$(cat "$SECRETS_FILE")"
+elif [ -z "$XAI_API_KEY" ]; then
+    echo "Error: XAI_API_KEY not found"
+    echo "  Create ~/secrets/grok with your API key"
+    exit 1
+fi
+
+# Check if LiteLLM server is already running
+if ! curl -s http://localhost:4001/health > /dev/null 2>&1; then
+    echo "Starting LiteLLM server for Grok..."
+    litellm --config ~/litellm_grok_config.yaml --port 4001 --host 0.0.0.0 > /dev/null 2>&1 &
+    sleep 2
+    echo "LiteLLM server started"
+else
+    echo "LiteLLM server already running"
+fi
+
+echo "Launching Claude Code with Grok models via LiteLLM"
+echo ""
+echo "Model mappings:"
+echo "  claude-sonnet-4-5  -> grok-4-1-fast-non-reasoning"
+echo "  claude-haiku-3-5   -> grok-4-1-fast-non-reasoning"
+echo "  claude-opus-4-5    -> grok-4-1-fast-reasoning"
+echo ""
+
+# Launch Claude Code with environment variables set
+ANTHROPIC_BASE_URL=http://localhost:4001 ANTHROPIC_API_KEY=sk-ant-api03-fake-key-for-litellm-proxy-placeholder claude "$@"
