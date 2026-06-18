@@ -6,4 +6,5 @@ aider \
   --model together_ai/MiniMaxAI/MiniMax-M3 \
   --editor-model "groq/$GROQ_MODEL" \
   --weak-model "groq/$GROQ_MODEL" \
+  --edit-format diff \
   "$@"
