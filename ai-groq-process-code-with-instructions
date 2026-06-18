@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Explains code and preserves it
-# Usage in Helix: | ai-groq-explain "your question"
+# Process the code with the instruction in it for AI processing.
+# Usage in Helix: | ai-groq-process-code "your code"
 
 # Read API key from file
 GROQ_KEY_FILE="$HOME/secrets/groq"
@@ -20,6 +20,17 @@ user_content="$*
 
 Code:
 \`\`\`
+In the code below, find the AI instructions and process the code as asked.
+
+- Return the code processed without adding any comments or explanation on the operation itself.
+- Return unmodified lines exactly like they were.
+- Preserve any formatting.
+- Keep the same style.
+- Keep the line length at 120 characters maximum.
+- When creating new variables, use explicit names.
+- Be brief. Keep it simple while being complete and explicit.
+- Don't mark at the beginning or ending of the code to mark the response as code.
+
 $stdin_content
 \`\`\`"
 
@@ -36,8 +47,5 @@ response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
 
 explanation=$(echo "$response" | jq -r '.choices[0].message.content // "Error: No response"')
 
-# Output: original code + explanation
-echo "$stdin_content"
-echo ""
-echo "# AI Explanation:"
-echo "# $explanation" | fold -w 80 -s | sed 's/^/# /'
+# Output: AI response
+echo "$explanation"

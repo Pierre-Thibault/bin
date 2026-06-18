@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Ask a question to the AI with optional screen selection as context.
+# Usage: Select text on screen, then run this script.
+# A Rofi prompt will appear to type the question; the answer is shown in a Rofi dialog.
+
+API_KEY_FILE="$HOME/secrets/groq"
+
+if [ ! -f "$API_KEY_FILE" ]; then
+  yad --error --title="Erreur" --text="Fichier de clé API introuvable : $API_KEY_FILE"
+  exit 1
+fi
+
+API_KEY=$(cat "$API_KEY_FILE" | tr -d '[:space:]')
+
+if [ -z "$API_KEY" ]; then
+  yad --error --title="Erreur" --text="Le fichier de clé API est vide"
+  exit 1
+fi
+
+GROQ_MODEL=$(cat "$HOME/secrets/groq-modele" | tr -d '[:space:]')
+
+# Get selected text from primary selection (Wayland or X11)
+if command -v wl-paste &>/dev/null; then
+  context=$(wl-paste --primary --no-newline 2>/dev/null)
+elif command -v xclip &>/dev/null; then
+  context=$(xclip -selection primary -o 2>/dev/null)
+elif command -v xsel &>/dev/null; then
+  context=$(xsel --primary --output 2>/dev/null)
+fi
+
+# Prompt for question with full context displayed above the input field
+if [ -n "$context" ]; then
+  result=$(yad --form \
+    --title="Question à l'IA" \
+    --width=650 --height=400 \
+    --field="Contexte:TXT" "$context" \
+    --field="Question" \
+    --focus-field=2 \
+    --button="Annuler":1 \
+    --button="Envoyer":0)
+  # yad --form outputs fields separated by |
+  question=$(echo "$result" | cut -d'|' -f2)
+else
+  question=$(yad --entry \
+    --title="Question à l'IA" \
+    --text="Question" \
+    --width=600 \
+    --button="Annuler":1 \
+    --button="Envoyer":0)
+fi
+
+# Exit silently if the user cancelled
+[ -z "$question" ] && exit 0
+
+# Build the message content
+if [ -n "$context" ]; then
+  user_content="$question
+
+Context:
+\`\`\`
+$context
+\`\`\`"
+else
+  user_content="$question"
+fi
+
+# Call Groq API
+response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d "{
+    \"model\": \"$GROQ_MODEL\",
+    \"messages\": [{\"role\": \"user\", \"content\": $(echo "$user_content" | jq -Rs .)}],
+    \"temperature\": 0.3,
+    \"max_tokens\": 2048
+  }")
+
+answer=$(echo "$response" | jq -r '.choices[0].message.content // "Erreur : aucune réponse de l'\''API"')
+
+# Display the answer in a scrollable, wrapping text box
+echo "$answer" | yad \
+  --text-info \
+  --wrap \
+  --title="Réponse de l'IA" \
+  --width=700 \
+  --height=500 \
+  --fontname="monospace 11" \
+  --escape-ok \
+  --button="Fermer":0
