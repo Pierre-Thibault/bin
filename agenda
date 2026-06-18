@@ -1,0 +1,257 @@
+#!/usr/bin/env nix-shell
+#! nix-shell -i python3 -p python3Packages.groq python3Packages.caldav python3Packages.icalendar
+
+"""agenda — Add appointments to iCloud Calendar using natural language.
+
+Usage:
+    agenda "Dentiste jeudi à 14h pour 1 heure"
+    agenda "Réunion équipe lundi prochain 10h-12h au bureau"
+
+Required secrets (~/secrets/):
+    groq            — Groq API key
+    groq-modele     — Groq model name
+    icloud-email    — Apple ID email
+    icloud-password — iCloud app-specific password (appleid.apple.com → Security)
+
+Optional:
+    agenda-system-prompt — Custom system prompt (replaces the built-in default)
+"""
+
+import json
+import subprocess
+import sys
+import uuid
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import caldav
+from groq import Groq
+from icalendar import Alarm, Calendar, Event, vRecur
+
+SECRETS = Path.home() / "secrets"
+
+CREATE_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_event",
+        "description": "Create a calendar event with the extracted details",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start": {
+                    "type": "string",
+                    "description": "ISO 8601: datetime (YYYY-MM-DDTHH:MM:SS) or date (YYYY-MM-DD) for all-day events",
+                },
+                "end": {
+                    "type": "string",
+                    "description": "ISO 8601: datetime or date. Default to 1 hour after start if not specified.",
+                },
+                "location": {"type": "string"},
+                "notes": {"type": "string"},
+                "all_day": {"type": "boolean"},
+                "calendar_name": {
+                    "type": "string",
+                    "description": "Name of the calendar to add the event to",
+                },
+                "alerts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Alert times before the event as plain strings, e.g. ['30 minutes', '2 hours', '1 day', '1 week']. One string per distinct alert.",
+                },
+                "rrule": {
+                    "type": "string",
+                    "description": (
+                        "iCalendar RRULE value (without 'RRULE:' prefix) for recurring events. "
+                        "Examples: 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR', "
+                        "'FREQ=MONTHLY;BYMONTHDAY=15', 'FREQ=YEARLY', "
+                        "'FREQ=WEEKLY;BYDAY=MO;COUNT=10', "
+                        "'FREQ=DAILY;UNTIL=20261231T235959Z'. "
+                        "Omit for non-recurring events."
+                    ),
+                },
+            },
+            "required": ["title", "start", "end"],
+        },
+    },
+}
+
+
+def read_secret(name: str) -> str:
+    path = SECRETS / name
+    if not path.exists():
+        print(f"Error: missing secret file {path}", file=sys.stderr)
+        sys.exit(1)
+    return path.read_text().strip()
+
+
+def system_timezone() -> str:
+    try:
+        result = subprocess.run(
+            ["timedatectl", "show", "--property=Timezone", "--value"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except FileNotFoundError:
+        pass
+    return "America/Toronto"
+
+
+def build_system_prompt(tz: ZoneInfo, tz_name: str) -> str:
+    custom = SECRETS / "agenda-system-prompt"
+    if custom.exists():
+        base = custom.read_text().strip()
+    else:
+        base = (
+            "You are a calendar assistant. Extract appointment details from the user's message "
+            "and call create_event. For events without an explicit end time, default to 1 hour. "
+            "For all-day events (no time mentioned), set all_day=true and use date-only format."
+        )
+    now = datetime.now(tz)
+    date_ctx = (
+        f"Today is {now.strftime('%A, %B %d, %Y')} ({now.strftime('%Y-%m-%d')}). "
+        f"Current time: {now.strftime('%H:%M')}. Timezone: {tz_name}."
+    )
+    return f"{date_ctx}\n{base}"
+
+
+def _parse_alert(text: str) -> int:
+    """Convert alert string (English or French) to minutes."""
+    import re
+    t = text.strip().lower()
+    for fr, en in (("une ", "1 "), ("un ", "1 "), ("deux ", "2 "), ("trois ", "3 "),
+                   ("quatre ", "4 "), ("cinq ", "5 ")):
+        t = t.replace(fr, en)
+    m = re.match(
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(min|minute|minutes|h|heure|heures|hour|hours|j|jour|jours|d|day|days|semaine|semaines|w|week|weeks)",
+        t,
+    )
+    if not m:
+        return 15
+    value, unit = float(m.group(1)), m.group(2)
+    if unit in ("min", "minute", "minutes"):
+        return int(value)
+    if unit in ("h", "heure", "heures", "hour", "hours"):
+        return int(value * 60)
+    if unit in ("j", "jour", "jours", "d", "day", "days"):
+        return int(value * 1440)
+    if unit in ("semaine", "semaines", "w", "week", "weeks"):
+        return int(value * 10080)
+    return 15
+
+
+def build_ical(args: dict, tz: ZoneInfo) -> bytes:
+    all_day = args.get("all_day", False)
+    if all_day:
+        start = date.fromisoformat(args["start"][:10])
+        end = date.fromisoformat(args["end"][:10])
+    else:
+        start = datetime.fromisoformat(args["start"]).replace(tzinfo=tz)
+        end = datetime.fromisoformat(args["end"]).replace(tzinfo=tz)
+
+    cal = Calendar()
+    cal.add("prodid", "-//agenda//agenda//EN")
+    cal.add("version", "2.0")
+
+    ev = Event()
+    ev.add("uid", str(uuid.uuid4()))
+    ev.add("summary", args["title"])
+    ev.add("dtstart", start)
+    ev.add("dtend", end)
+    if args.get("location"):
+        ev.add("location", args["location"])
+    if args.get("notes"):
+        ev.add("description", args["notes"])
+    if args.get("rrule"):
+        ev.add("rrule", vRecur.from_ical(args["rrule"]))
+    for alert in args.get("alerts") or []:
+        minutes = _parse_alert(alert)
+        alarm = Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("description", args["title"])
+        alarm.add("trigger", timedelta(minutes=-minutes), parameters={"RELATED": "START"})
+        ev.add_component(alarm)
+    cal.add_component(ev)
+    return cal.to_ical()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print('Usage: agenda "Dentiste jeudi à 14h pour 1 heure"', file=sys.stderr)
+        sys.exit(1)
+
+    verbose = "-v" in sys.argv
+    args_list = [a for a in sys.argv[1:] if a != "-v"]
+    if not args_list:
+        print('Usage: agenda [-v] "Dentiste jeudi à 14h pour 1 heure"', file=sys.stderr)
+        sys.exit(1)
+    message = " ".join(args_list)
+    api_key = read_secret("groq")
+    model = read_secret("groq-modele")
+    icloud_user = read_secret("icloud-email")
+    icloud_pass = read_secret("icloud-password")
+    tz_name = system_timezone()
+    tz = ZoneInfo(tz_name)
+    system_prompt = build_system_prompt(tz, tz_name)
+
+    client = Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ],
+        tools=[CREATE_EVENT_TOOL],
+        tool_choice={"type": "function", "function": {"name": "create_event"}},
+    )
+
+    tool_call = response.choices[0].message.tool_calls[0]
+    args = json.loads(tool_call.function.arguments)
+    if verbose:
+        print(f"[debug] tool args: {json.dumps(args, ensure_ascii=False, indent=2)}", file=sys.stderr)
+        for alert in args.get("alerts") or []:
+            print(f"[debug] alert '{alert}' → {_parse_alert(alert)} minutes", file=sys.stderr)
+
+    dav = caldav.DAVClient(
+        url="https://caldav.icloud.com/",
+        username=icloud_user,
+        password=icloud_pass,
+    )
+    calendars = dav.principal().calendars()
+    if not calendars:
+        print("Error: no calendars found on iCloud", file=sys.stderr)
+        sys.exit(1)
+
+    target = args.get("calendar_name")
+    if target:
+        calendar = next((c for c in calendars if str(c.name) == target), None)
+        if calendar is None:
+            available = [str(c.name) for c in calendars]
+            print(f"Error: calendar '{target}' not found. Available: {available}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        calendar = calendars[0]
+    ical = build_ical(args, tz)
+    if verbose:
+        print(f"[debug] iCal:\n{ical.decode()}", file=sys.stderr)
+    calendar.add_event(ical)
+
+    all_day = args.get("all_day", False)
+    loc = f" @ {args['location']}" if args.get("location") else ""
+    print(f"✓ {args['title']}{loc}")
+    if all_day:
+        print(f"  {args['start'][:10]}")
+    else:
+        start_dt = datetime.fromisoformat(args["start"]).replace(tzinfo=tz)
+        end_dt = datetime.fromisoformat(args["end"]).replace(tzinfo=tz)
+        print(f"  {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%H:%M')}")
+    if args.get("rrule"):
+        print(f"  ↻ {args['rrule']}")
+
+
+if __name__ == "__main__":
+    main()
