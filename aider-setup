@@ -1,0 +1,9 @@
+#/usr/bin/env bash
+
+GROQ_MODEL=$(cat "$HOME/secrets/groq-modele" | tr -d '[:space:]')
+
+aider \
+  --model together_ai/MiniMaxAI/MiniMax-M3 \
+  --editor-model "groq/$GROQ_MODEL" \
+  --weak-model "groq/$GROQ_MODEL" \
+  "$@"
