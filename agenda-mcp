@@ -1,0 +1,189 @@
+#!/usr/bin/env nix-shell
+#! nix-shell -i python3 -p python3Packages.fastmcp python3Packages.caldav python3Packages.icalendar
+
+"""agenda-mcp — MCP server for adding appointments to iCloud Calendar.
+
+Required secrets (~/secrets/):
+    icloud-email    — Apple ID email
+    icloud-password — iCloud app-specific password (appleid.apple.com → Security)
+"""
+
+import re
+import subprocess
+import sys
+import uuid
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import caldav
+from fastmcp import FastMCP
+from icalendar import Alarm, Calendar, Event, vRecur
+
+SECRETS = Path.home() / "secrets"
+
+mcp = FastMCP("agenda")
+
+
+def read_secret(name: str) -> str:
+    path = SECRETS / name
+    if not path.exists():
+        raise RuntimeError(f"Missing secret file: {path}")
+    return path.read_text().strip()
+
+
+def system_timezone() -> str:
+    try:
+        result = subprocess.run(
+            ["timedatectl", "show", "--property=Timezone", "--value"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except FileNotFoundError:
+        pass
+    return "America/Toronto"
+
+
+def _parse_alert(text: str) -> int:
+    """Convert alert string (English or French) to minutes."""
+    t = text.strip().lower()
+    for fr, en in (("une ", "1 "), ("un ", "1 "), ("deux ", "2 "), ("trois ", "3 "),
+                   ("quatre ", "4 "), ("cinq ", "5 ")):
+        t = t.replace(fr, en)
+    m = re.match(
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(min|minute|minutes|h|heure|heures|hour|hours|j|jour|jours|d|day|days|semaine|semaines|w|week|weeks)",
+        t,
+    )
+    if not m:
+        return 15
+    value, unit = float(m.group(1)), m.group(2)
+    if unit in ("min", "minute", "minutes"):
+        return int(value)
+    if unit in ("h", "heure", "heures", "hour", "hours"):
+        return int(value * 60)
+    if unit in ("j", "jour", "jours", "d", "day", "days"):
+        return int(value * 1440)
+    if unit in ("semaine", "semaines", "w", "week", "weeks"):
+        return int(value * 10080)
+    return 15
+
+
+def build_ical(args: dict, tz: ZoneInfo) -> bytes:
+    all_day = args.get("all_day", False)
+    if all_day:
+        start = date.fromisoformat(args["start"][:10])
+        end = date.fromisoformat(args["end"][:10])
+    else:
+        start = datetime.fromisoformat(args["start"]).replace(tzinfo=tz)
+        end = datetime.fromisoformat(args["end"]).replace(tzinfo=tz)
+
+    cal = Calendar()
+    cal.add("prodid", "-//agenda//agenda//EN")
+    cal.add("version", "2.0")
+
+    ev = Event()
+    ev.add("uid", str(uuid.uuid4()))
+    ev.add("summary", args["title"])
+    ev.add("dtstart", start)
+    ev.add("dtend", end)
+    if args.get("location"):
+        ev.add("location", args["location"])
+    if args.get("notes"):
+        ev.add("description", args["notes"])
+    if args.get("rrule"):
+        ev.add("rrule", vRecur.from_ical(args["rrule"]))
+    for alert in args.get("alerts") or []:
+        minutes = _parse_alert(alert)
+        alarm = Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("description", args["title"])
+        alarm.add("trigger", timedelta(minutes=-minutes), parameters={"RELATED": "START"})
+        ev.add_component(alarm)
+    cal.add_component(ev)
+    return cal.to_ical()
+
+
+def dav_client() -> caldav.DAVClient:
+    return caldav.DAVClient(
+        url="https://caldav.icloud.com/",
+        username=read_secret("icloud-email"),
+        password=read_secret("icloud-password"),
+    )
+
+
+@mcp.tool()
+def list_calendars() -> list[str]:
+    """List all available iCloud calendars."""
+    calendars = dav_client().principal().calendars()
+    return [str(c.name) for c in calendars]
+
+
+@mcp.tool()
+def create_calendar_event(
+    title: str,
+    start: str,
+    end: str,
+    calendar_name: str = "",
+    location: str = "",
+    notes: str = "",
+    all_day: bool = False,
+    alerts: list[str] = [],
+    rrule: str = "",
+) -> str:
+    """Create a calendar event in iCloud.
+
+    Args:
+        title: Event title.
+        start: ISO 8601 datetime (YYYY-MM-DDTHH:MM:SS) or date (YYYY-MM-DD) for all-day events.
+        end: ISO 8601 datetime or date. Default to 1 hour after start if not specified.
+        calendar_name: Name of the target calendar. Uses the first calendar if omitted.
+        location: Event location.
+        notes: Event notes or description.
+        all_day: True for all-day events (use date-only format for start/end).
+        alerts: Alert times before the event, e.g. ['30 minutes', '1 day'].
+        rrule: iCalendar RRULE value (without 'RRULE:' prefix) for recurring events,
+               e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR'. Omit for non-recurring events.
+    """
+    tz_name = system_timezone()
+    tz = ZoneInfo(tz_name)
+
+    args = {
+        "title": title,
+        "start": start,
+        "end": end,
+        "all_day": all_day,
+        "location": location,
+        "notes": notes,
+        "alerts": alerts,
+        "rrule": rrule,
+    }
+
+    client = dav_client()
+    calendars = client.principal().calendars()
+    if not calendars:
+        raise RuntimeError("No calendars found on iCloud")
+
+    if calendar_name:
+        calendar = next((c for c in calendars if str(c.name) == calendar_name), None)
+        if calendar is None:
+            available = [str(c.name) for c in calendars]
+            raise ValueError(f"Calendar '{calendar_name}' not found. Available: {available}")
+    else:
+        calendar = calendars[0]
+
+    calendar.add_event(build_ical(args, tz))
+
+    loc = f" @ {location}" if location else ""
+    if all_day:
+        return f"✓ {title}{loc} — {start[:10]}"
+    else:
+        start_dt = datetime.fromisoformat(start).replace(tzinfo=tz)
+        end_dt = datetime.fromisoformat(end).replace(tzinfo=tz)
+        return f"✓ {title}{loc} — {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%H:%M')}"
+
+
+if __name__ == "__main__":
+    mcp.run()
