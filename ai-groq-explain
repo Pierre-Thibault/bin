@@ -2,15 +2,6 @@
 # Explains code and preserves it
 # Usage in Helix: | ai-groq-explain "your question"
 
-# Read API key from file
-GROQ_KEY_FILE="$HOME/secrets/groq"
-
-if [ ! -f "$GROQ_KEY_FILE" ]; then
-  echo "Error: API key file not found at $GROQ_KEY_FILE" >&2
-  exit 1
-fi
-
-GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
 GROQ_MODEL=$(cat "$HOME/secrets/groq-modele" | tr -d '[:space:]')
 
 # Read stdin (the selected code)
@@ -24,9 +15,8 @@ $stdin_content
 \`\`\`"
 
 # Call Groq API
-response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+response=$(curl -s http://groq.proxy:4140/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROQ_API_KEY" \
   -d "{
     \"model\": \"$GROQ_MODEL\",
     \"messages\": [{\"role\": \"user\", \"content\": $(echo "$user_content" | jq -Rs .)}],

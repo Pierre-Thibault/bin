@@ -3,20 +3,6 @@
 # Usage: Select text on screen, then run this script.
 # A dialog will appear to type the question; the answer is shown in a text box.
 
-GROQ_KEY_FILE="$HOME/secrets/groq"
-
-if [ ! -f "$GROQ_KEY_FILE" ]; then
-  yad --error --title="Error" --text="API key file not found: $GROQ_KEY_FILE"
-  exit 1
-fi
-
-GROQ_API_KEY=$(cat "$GROQ_KEY_FILE" | tr -d '[:space:]')
-
-if [ -z "$GROQ_API_KEY" ]; then
-  yad --error --title="Error" --text="API key file is empty"
-  exit 1
-fi
-
 GROQ_MODEL=$(cat "$HOME/secrets/groq-modele" | tr -d '[:space:]')
 
 # Get selected text from primary selection (Wayland or X11)
@@ -65,9 +51,8 @@ else
 fi
 
 # Call Groq API
-response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+response=$(curl -s http://groq.proxy:4140/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROQ_API_KEY" \
   -d "{
     \"model\": \"$GROQ_MODEL\",
     \"messages\": [{\"role\": \"user\", \"content\": $(echo "$user_content" | jq -Rs .)}],
