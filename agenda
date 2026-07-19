@@ -30,6 +30,7 @@ from groq import Groq
 from icalendar import Alarm, Calendar, Event, vRecur
 
 SECRETS = Path.home() / "secrets"
+SECRETS_RUNTIME = Path("/run/secrets")
 
 CREATE_EVENT_TOOL = {
     "type": "function",
@@ -79,11 +80,12 @@ CREATE_EVENT_TOOL = {
 
 
 def read_secret(name: str) -> str:
-    path = SECRETS / name
-    if not path.exists():
-        print(f"Error: missing secret file {path}", file=sys.stderr)
-        sys.exit(1)
-    return path.read_text().strip()
+    for base in (SECRETS_RUNTIME, SECRETS):
+        path = base / name
+        if path.exists():
+            return path.read_text().strip()
+    print(f"Error: missing secret: {name}", file=sys.stderr)
+    sys.exit(1)
 
 
 def system_timezone() -> str:

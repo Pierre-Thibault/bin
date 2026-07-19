@@ -21,15 +21,17 @@ from fastmcp import FastMCP
 from icalendar import Alarm, Calendar, Event, vRecur
 
 SECRETS = Path.home() / "secrets"
+SECRETS_RUNTIME = Path("/run/secrets")
 
 mcp = FastMCP("agenda")
 
 
 def read_secret(name: str) -> str:
-    path = SECRETS / name
-    if not path.exists():
-        raise RuntimeError(f"Missing secret file: {path}")
-    return path.read_text().strip()
+    for base in (SECRETS_RUNTIME, SECRETS):
+        path = base / name
+        if path.exists():
+            return path.read_text().strip()
+    raise RuntimeError(f"Missing secret: {name}")
 
 
 def system_timezone() -> str:
