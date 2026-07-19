@@ -1,0 +1,45 @@
+#!/bin/sh
+# Home backup with borg, replacing Pika Backup (same repo, same exclusions).
+# BORG_REPO and BORG_PASSCOMMAND must come from the shell environment.
+# Optional: BORG_MIRROR (rclone destination) enables off-site sync after backup.
+set -eu
+
+missing=0
+for var in BORG_REPO BORG_PASSCOMMAND; do
+    if [ -z "$(eval "echo \${$var:-}")" ]; then
+        echo "Error: $var is not set." >&2
+        missing=1
+    fi
+done
+[ "$missing" -eq 0 ] || exit 1
+
+rc=0
+borg create \
+    --progress --stats \
+    --one-file-system \
+    --compression zstd \
+    --exclude-caches \
+    --exclude-if-present .nobackup \
+    --exclude 'pp:/home/pierre/.cache' \
+    --exclude 're:^home/pierre/\.var/app/[^/]+/cache/' \
+    --exclude 'pp:/home/pierre/.local/share/Trash' \
+    '::fd822b-{now:%Y-%m-%d_%H-%M}' \
+    /home/pierre || rc=$?
+
+# borg exits 1 for mere warnings (e.g. unreadable files); only >1 is fatal
+if [ "$rc" -gt 1 ]; then
+    exit "$rc"
+elif [ "$rc" -eq 1 ]; then
+    echo "borg create finished with warnings (see above)." >&2
+fi
+
+if [ -n "${BORG_MIRROR:-}" ]; then
+    rclone sync --progress "$BORG_REPO" "$BORG_MIRROR"
+else
+    echo "BORG_MIRROR is not set; skipping off-site mirror." >&2
+fi
+
+# Uncomment to thin out old archives (deletes data — review before enabling):
+# borg prune --glob-archives 'fd822b-*' \
+#     --keep-daily 14 --keep-weekly 4 --keep-monthly 12 --keep-yearly 10
+# borg compact
