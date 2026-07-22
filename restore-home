@@ -1,0 +1,34 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p borg openssh libsecret
+# Restore /home/pierre from a borg repo, meant to run right after a fresh
+# NixOS install — before backup-home's packages exist system-wide.
+# See ~/nixos-config/doc/disaster-recovery.md, phase 6, for the manual
+# prerequisites (SSH key + GNOME keyring entries) this script depends on.
+set -euo pipefail
+
+SOURCE=disque2   # disque2 | borgbase
+ARCHIVE=         # empty = restore the most recent archive in the repo
+
+case "$SOURCE" in
+    disque2)
+        export BORG_REPO='/run/media/pierre/Disque2/BorgBackup/backup-pierre-pierre-nixos'
+        export BORG_PASSCOMMAND='secret-tool lookup repo-id 1dd9e1100359cab671f26037e17ba538cdeee0b2fa47181fd4c29e51204a66ac'
+        ;;
+    borgbase)
+        export BORG_REPO='ssh://wsw5tfhn@wsw5tfhn.repo.borgbase.com/./repo'
+        export BORG_PASSCOMMAND='secret-tool lookup repo-id borgbase-home'
+        export BORG_RSH="env SSH_ASKPASS=$HOME/bin/ssh-askpass-borgbase SSH_ASKPASS_REQUIRE=force ssh -i $HOME/.ssh/borgbase-appendonly -o StrictHostKeyChecking=accept-new"
+        ;;
+    *)
+        echo "Error: SOURCE must be disque2 or borgbase" >&2
+        exit 1
+        ;;
+esac
+
+if [ -z "$ARCHIVE" ]; then
+    ARCHIVE=$(borg list --short --last 1)
+    echo "Using most recent archive: $ARCHIVE" >&2
+fi
+
+cd /
+borg extract --progress "::$ARCHIVE"
