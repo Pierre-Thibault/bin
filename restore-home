@@ -1,5 +1,5 @@
 #!/usr/bin/env nix-shell
-#!nix-shell -i bash -p borg openssh libsecret
+#!nix-shell -i bash -p borgbackup openssh libsecret
 # Restore /home/pierre from a borg repo, meant to run right after a fresh
 # NixOS install — before backup-home's packages exist system-wide.
 # See ~/nixos-config/doc/disaster-recovery.md, phase 6, for the manual
