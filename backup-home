@@ -3,7 +3,9 @@
 # BORG_REPO and BORG_PASSCOMMAND must come from the shell environment.
 # Optional: BORG_REMOTE_REPO + BORG_REMOTE_PASSCOMMAND (e.g. BorgBase) run a
 # second, independent borg backup off-site; BORG_MIRROR (rclone destination)
-# additionally mirrors the local repo.
+# additionally mirrors the local repo; GIT_MIRROR_DIR keeps offline bare
+# mirrors of the GitHub-hosted repos (independent of GitHub itself) plus
+# a plain copy of the disaster-recovery runbook at the disk's root.
 set -eu
 
 missing=0
@@ -33,6 +35,9 @@ backup_to() (
         --exclude 'pp:/home/pierre/.cache' \
         --exclude 're:^home/pierre/\.var/app/[^/]+/cache/' \
         --exclude 'pp:/home/pierre/.local/share/Trash' \
+        --exclude 'pp:/home/pierre/nixos-config/.git' \
+        --exclude 'pp:/home/pierre/bin/.git' \
+        --exclude 'pp:/home/pierre/dotfiles/.git' \
         "::$archive" \
         /home/pierre
 )
@@ -61,6 +66,27 @@ fi
 if [ -n "${BORG_MIRROR:-}" ]; then
     rclone sync --progress --transfers 2 --timeout 1m --retries 10 \
         "$BORG_REPO" "$BORG_MIRROR"
+fi
+
+if [ -n "${GIT_MIRROR_DIR:-}" ]; then
+    mkdir -p "$GIT_MIRROR_DIR"
+    for repo in nixos-config bin dotfiles; do
+        mirror="$GIT_MIRROR_DIR/$repo.git"
+        if [ -d "$mirror" ]; then
+            git -C "$mirror" remote update --prune
+        else
+            git clone --mirror "https://github.com/Pierre-Thibault/$repo.git" "$mirror"
+        fi
+    done
+
+    # Plain, directly readable copy at the disk's root: usable from any
+    # live OS, no git/borg/keyring needed to read it.
+    runbook="$HOME/nixos-config/doc/disaster-recovery.md"
+    if [ -f "$runbook" ]; then
+        cp "$runbook" "$(dirname "$GIT_MIRROR_DIR")/disaster-recovery.md"
+    fi
+else
+    echo "GIT_MIRROR_DIR is not set; skipping offline git mirrors." >&2
 fi
 
 # Uncomment to thin out old archives (deletes data — review before enabling):
