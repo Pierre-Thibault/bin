@@ -1,3 +1,0 @@
-#!/bin/sh
-# SSH_ASKPASS helper for ~/.ssh/borgbase-appendonly, backed by the GNOME keyring.
-exec secret-tool lookup ssh-key borgbase-appendonly

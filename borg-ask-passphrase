@@ -1,0 +1,11 @@
+#!/bin/sh
+# BORG_PASSCOMMAND helper for pierre's manual runs of backup-home/restore-home.
+# Deliberately interactive (not keyring-backed): typing the passphrase each
+# time means a process running under this UID can't fetch it passively --
+# only the dedicated borgbackup user gets a non-interactive passcommand.
+printf 'Borg passphrase: ' >/dev/tty
+stty -echo </dev/tty
+IFS= read -r passphrase </dev/tty
+stty echo </dev/tty
+printf '\n' >/dev/tty
+printf '%s\n' "$passphrase"
